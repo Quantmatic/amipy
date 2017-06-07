@@ -9,4 +9,4 @@ ohlc = data[:][['open', 'high', 'low', 'close', 'volume']]
 
 view [sample strategy results](https://nbviewer.jupyter.org/github/Quantmatic/amipy/blob/master/BollingerCMF.html) via nbviewer
 
-
+<script src="//repl.it/embed/IbUQ/0.js"></script>
