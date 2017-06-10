@@ -2,14 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue May 16 11:26:03 2017
-@author: https://github.com/Quantmatic/
+@author: github.com/Quantmatic
 """
 import time
 from itertools import izip, count
 import pandas as pd
 import matplotlib.pyplot as plt
 from pymongo import MongoClient
-
+import numpy as np
+from ffn import PerformanceStats
+import numba
 
 global TRADES
 global TICKS
@@ -56,32 +58,57 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
         print 'Resample finished in ' + str(time.time() - start) + ' seconds.\n'
         return resampled_df
 
-def ex_rem(array1, array2, maxtrades=1):
+
+def analize_results_ffn(rfr):
+    ''' analize performance with ffn'''
+    data = TRADES.equity.resample('1D').last().dropna()
+    myffn = PerformanceStats(data, rfr)
+    myffn.display()
+    print '\n'
+    myffn.display_monthly_returns()
+    print '\n'
+    #print myffn.stats
+
+
+@numba.jit
+def __remove(array1, array2, maxtrades=1):
     """ Remove excessive signals """
-    #start = time.time()
-    assert array1.index.equals(array2.index), 'Indices do not match'
-    output = pd.Series(False, dtype=bool, index=array1.index)
-    iterator = 0
+    nnn = len(array1)
+    output = np.zeros(nnn, dtype='int64')
+    i = 0
 
-    for i, item in enumerate(zip(array1, array2)):
-        if item[0] and i >= iterator:
-            output[i] = True
-            cnt = 1
-            for j, arr1, arr2 in izip(count(), array1[i+1:], array2[i+1:]):
-                if arr1:
-                    cnt += 1
-                    if cnt > maxtrades:
-                        output[j+i+1] = False
+    while i < nnn:
+        if array1[i]:
+            output[i] = 1
+            count = 1
+            j = i+1
+            while j < nnn:
+                if array1[j]:
+                    count += 1
+                    if count > maxtrades:
+                        output[j] = 0
                     else:
-                        output[j+i+1] = True
+                        output[j] = 1
 
-                if arr2:
-                    iterator = i+j+1
+                if array2[j]:
                     break
-    #print 'ExRem processed in ' + str(time.time() - start) + ' seconds'
+
+                j += 1
+
+            i = j
+        else:
+            i += 1
+
     return output
 
-# plot_trades('2015','2015')
+
+def ex_rem(array1, array2, maxtrades=1):
+    """ Remove excessive signals """
+    assert array1.index.equals(array2.index), 'Indices do not match'
+    idx = array1.index
+    ret = __remove(array1.values, array2.values, maxtrades)
+    return pd.Series(ret, index=idx, dtype=bool)
+
 def plot_trades(startdate, enddate):
     ''' plot trades '''
     if len(TRADES > 0):
@@ -159,7 +186,7 @@ def max_draw(trades):
     maxdd = 0 #maxdd
     closs = 0 #consecutive losses
     trades = trades.equity.sort_index()
-    trades = trades[trades != trades.shift(1)]
+    trades = trades[trades != trades.shift(1)].values
     iterator = -1
 
     for i, item in izip(count(), trades):
@@ -201,61 +228,64 @@ class Amipy(object):
         global TICK_SIZE
         TICK_SIZE = TICKSIZE
 
+    @numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
         ''' apply stops on short trades '''
-        #start = time.time()
         tsize = self.tick_size
-        mcover = [False for i in xrange(len(short))]
-        _open = OHLC.open
+        short = short.values
+        buy = buy.values
+        shortprice = shortprice.values
+        _open = OHLC.open.values
+        mcover = np.zeros(len(short), dtype='int64')
 
-        for i, item in enumerate(zip(short, shortprice)):
-
-            if item[0] > 0: #*** short ***#
-                topen = item[1]
-                for cnt, col, price in izip(count(), buy[i+1:], _open[i+1:]):
-                    val = topen - price
+        nnn = len(buy)
+        for i in xrange(nnn):
+            if short[i]:
+                topen = shortprice[i]
+                for cnt in xrange(i+1, nnn, 1):
+                    val = topen - _open[cnt]
                     if val > takeprofit * tsize:
-                        mcover[cnt+i+1] = True
+                        mcover[cnt] = 1
                         break
                     elif val < -stoploss * tsize:
-                        mcover[cnt+i+1] = True
+                        mcover[cnt] = 1
                         break
-                    elif col:
-                        mcover[cnt+i+1] = True
+                    elif buy[cnt]:
+                        mcover[cnt] = 1
                         break
 
-        #print '_ApplyStopCover processed in ' + str(time.time() - start) + ' seconds'
         return mcover
 
-
+    @numba.jit
     def apply_stops_sell(self, buy, short, buyprice, stoploss, takeprofit):
         ''' apply stops on long trades '''
-        #start = time.time()
         tsize = self.tick_size
-        msell = [False for i in xrange(len(short))]
-        _open = OHLC.open
+        short = short.values
+        buy = buy.values
+        buyprice = buyprice.values
+        nnn = len(buy)
+        msell = np.zeros(nnn, dtype='int64')
+        _open = OHLC.open.values
 
-        for i, col in enumerate(zip(buy, buyprice)):
-            if col[0] > 0: #*** active long ***#
-                topen = col[1]
-                for j, item, price in izip(count(), short[i+1:], _open[i+1:]):
-                    val = price - topen
+        for i in xrange(nnn):
+            if buy[i]:
+                topen = buyprice[i]
+                for cnt in xrange(i+1, nnn, 1):
+                    val = _open[cnt] - topen
                     if val > takeprofit * tsize:
-                        msell[j+i+1] = True
+                        msell[cnt] = 1
                         break
                     elif val < -stoploss * tsize:
-                        msell[j+i+1] = True
+                        msell[cnt] = 1
                         break
-                    elif item:
-                        msell[j+i+1] = True
+                    elif short[cnt]:
+                        msell[cnt] = 1
                         break
 
-        #print '_ApplyStopSell processed in ' + str(time.time() - start) + ' seconds'
         return msell
 
     def run(self, buy, short, sell, cover, buyprice, shortprice, sellprice, coverprice):
         ''' calculate equity based on trade signals '''
-        #mtimer = time.time()
         idx = ((buy > 0) | (short > 0) | (sell > 0) | (cover > 0))
 
         buy = buy[idx]
@@ -267,15 +297,19 @@ class Amipy(object):
         sellprice = sellprice[idx]
         coverprice = coverprice[idx]
 
-        myticks = []
         myeq = self.starting_equity
-        myequity = pd.Series(myeq, index=buy.index, name='equity')
+        myequity = np.empty(len(buy))
+        imp_equity = np.empty(len(buy))
+        myequity.fill(myeq)
+        imp_equity.fill(myeq)
         mytrades = []
-        mvalue = []
-        imp_equity = pd.Series(myeq, index=buy.index, name='imp_equity')
+        myticks = []
+        mvalue = np.zeros(1, dtype='float64')
 
-        for i, item in enumerate(zip(buy, short, sell, cover, buyprice,
-                                     shortprice, sellprice, coverprice)):
+
+        for i, item in enumerate(zip(buy.values, short.values, sell.values, cover.values,
+                                     buyprice.values, shortprice.values, sellprice.values,
+                                     coverprice.values)):
 
             if item[1] > 0: # *** active short *** #
 
@@ -290,8 +324,8 @@ class Amipy(object):
                                  'lotsize': -lot_size, 'price': shortprice[i],
                                  'value': 0, 'equity': myequity[i]})
 
-                for cnt, col1, col2, col3 in izip(count(), cover[i+1:],
-                                                  coverprice[i+1:], buy[i+1:]):
+                for cnt, col1, col2, col3 in izip(count(), cover.values[i+1:],
+                                                  coverprice.values[i+1:], buy.values[i+1:]):
 
                     trd_ticks = (item[5] - col2) / self.tick_size
                     trd_val = trd_ticks * self.tickvalue * lot_size
@@ -305,9 +339,9 @@ class Amipy(object):
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
                         myticks.append({'index': cover.index[cnt+i+1], 'value': trd_ticks})
-                        mvalue.append(trd_val)
+                        mvalue = np.append(mvalue, trd_val)
 
-                        value = myeq + sum(mvalue)
+                        value = myeq + np.sum(mvalue)
                         myequity[cnt+i+1:] = value
                         imp_equity[cnt+i+1:] = value
 
@@ -331,8 +365,8 @@ class Amipy(object):
                                  'lotsize': lot_size, 'price': buyprice[i],
                                  'value': 0, 'equity': myequity[i]})
 
-                for cnt, col1, col2, col3 in izip(count(), sell[i+1:],
-                                                  sellprice[i+1:], short[i+1:]):
+                for cnt, col1, col2, col3 in izip(count(), sell.values[i+1:],
+                                                  sellprice.values[i+1:], short.values[i+1:]):
 
                     trd_ticks = (col2 - item[4]) / self.tick_size
                     trd_val = trd_ticks * self.tickvalue * lot_size
@@ -346,9 +380,9 @@ class Amipy(object):
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
                         myticks.append({'index': sell.index[cnt+i+1], 'value': trd_ticks})
-                        mvalue.append(trd_val)
+                        mvalue = np.append(mvalue, trd_val)
 
-                        value = myeq + sum(mvalue)
+                        value = myeq + np.sum(mvalue)
                         myequity[cnt+i+1:] = value
                         imp_equity[cnt+i+1:] = value
 
@@ -358,7 +392,6 @@ class Amipy(object):
 
                         break
 
-        #print 'Equity processed in ' + str(time.time()-mtimer) + ' seconds'
         global TRADES
         mytrades = pd.DataFrame(mytrades).dropna()
         mytrades.set_index('index', drop=True, append=False, inplace=True, verify_integrity=False)
@@ -383,7 +416,7 @@ class Amipy(object):
         dd2here = ser - max2here
         return dd2here.min()
 
-    def analize_results(self):
+    def analize_results(self, rfr):
         ''' analize trades '''
         pt_count = 0.0
         pt_short = 0.0
@@ -416,22 +449,22 @@ class Amipy(object):
         if t_long > 0:
             print 'Long winrate: ' + str(round(pt_long/t_long*100, 2)) + '%'
 
-        _days = lambda eqd: eqd.resample('D').sum().dropna()
 
-        day = _days(TICKS)
-        annual_sharpe = (day.mean() / day.std()) * (252*0.05)
-        print 'Sharpe: ' + str(round(annual_sharpe, 2))
+        daily_ret = TRADES.equity.resample('1D').last().dropna().pct_change()
+        daily_excess = daily_ret - rfr/252
+        sharpe = np.sqrt(252) * daily_excess.mean() / daily_excess.std()
+        print 'Sharpe: {:.2f} '.format(float(sharpe))
 
-        annual_sortino = (day.mean() / day[day < day.shift()].std()) * (252*0.05)
-        print 'Sortino: ' + str(round(annual_sortino, 2))
+        sortino = np.sqrt(252) * daily_excess.mean() / daily_excess[daily_excess < 0].std()
+        print 'Sortino: {:.2f} '.format(float(sortino))
 
-        years = TRADES.index.year
-        period = (years[-1] - years[0]) + 1
-        cagr = int((float(TRADES.equity[-1]) / float(TRADES.equity[0])))**(1/float(period))-1
+        period = (OHLC.index[-1] - OHLC.index[0]).total_seconds() / (31557600)
+        cagr = (TRADES.equity.values[-1] / TRADES.equity.values[0]) ** (1/float(period))-1
         print 'CAGR: {:.2%} '.format(float(cagr))
 
-        pfr = lambda eqd: abs(eqd[eqd > 0].sum() / eqd[eqd < 0].sum())
-        print 'Profit factor: {:.2}'.format(pfr(TRADES.value))
+        tval = TRADES.value.values
+        pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
+        print 'Profit factor: {:.2f}'.format(pfr)
 
         new_equity = TRADES.equity[(TRADES.equity != TRADES.equity.shift(1))]
         rolling_dd = new_equity.rolling(min_periods=0, window=10,
@@ -447,7 +480,7 @@ class Amipy(object):
 
         fig = plt.figure()
         ax1 = fig.add_subplot(211)
-        df1[:].plot(ax=ax1)
+        df1.plot(ax=ax1)
         ax1.set_ylabel('Portfolio value (USD)')
         ax1.set_xlabel('')
         plt.gcf().set_size_inches(8, 10)
