@@ -38,7 +38,7 @@ class BoliingerCMF(object):
         ptimer = time.time()
 
         bbperiod = 25
-        bbupper, bblower, bbmid = TTR.bollinger(data.close, bbperiod, 2)
+        bbupper, bblower, bbmid = TTR.bollinger(ohlc.close, bbperiod, 2)
 
         cmf_period = bbperiod*2
         cmf = TTR.cmf(ohlc, cmf_period)
@@ -68,8 +68,8 @@ class BoliingerCMF(object):
         cover = buy | stopcover
         sell = short | stopsell
 
-        buy = amipy.ex_rem(buy, sell, 1) #remove access signals
-        short = amipy.ex_rem(short, cover, 1) #remove access signals
+        buy = amipy.ex_rem(buy, sell, 1) #remove excess signals
+        short = amipy.ex_rem(short, cover, 1) #remove excess signals
 
         buyprice = ohlc.open + (2*self.tick_size) ## *adjust for slippage
         shortprice = ohlc.open - (2*self.tick_size) ## *adjust for slippage
@@ -87,7 +87,8 @@ class BoliingerCMF(object):
         print 'Starting Equity: ' + str(self.starting_equity)
         print 'Final Equity: ' + str(last_equity)
 
-        backtest.analize_results()
+        backtest.analize_results(0.05)
+        amipy.analize_results_ffn(0.05)
 
 class Context(object):
     ''' backtest context '''
