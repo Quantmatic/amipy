@@ -7,4 +7,4 @@ also compatible with any other data source, so long as the OHLC dataframe has th
 
 ohlc = data[:][['open', 'high', 'low', 'close', 'volume']]
 
-view [sample strategy results](https://nbviewer.jupyter.org/github/Quantmatic/amipy/blob/master/BollingerCMF.html) via nbviewer
+view [sample strategy results](https://nbviewer.jupyter.org/github/Quantmatic/amipy/blob/master/examples/BollingerCMF.html) via nbviewer
