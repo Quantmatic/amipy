@@ -8,17 +8,11 @@ import time
 from itertools import izip, count
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.pylab as pylab
 from pymongo import MongoClient
 import numpy as np
 from ffn import PerformanceStats
 import numba
-
-global TRADES
-global TICKS
-global OHLC
-global TICK_SIZE
-global EQUITY
-global IMP_EQUITY
 
 
 def df_resample(dframe, interval):
@@ -57,17 +51,6 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
         resampled_df = df_resample(_df, interval)
         print 'Resample finished in ' + str(time.time() - start) + ' seconds.\n'
         return resampled_df
-
-
-def analize_results_ffn(rfr):
-    ''' analize performance with ffn'''
-    data = TRADES.equity.resample('1D').last().dropna()
-    myffn = PerformanceStats(data, rfr)
-    myffn.display()
-    print '\n'
-    myffn.display_monthly_returns()
-    print '\n'
-    #print myffn.stats
 
 
 @numba.jit
@@ -109,76 +92,6 @@ def ex_rem(array1, array2, maxtrades=1):
     ret = __remove(array1.values, array2.values, maxtrades)
     return pd.Series(ret, index=idx, dtype=bool)
 
-def plot_trades(startdate, enddate):
-    ''' plot trades '''
-    if len(TRADES > 0):
-        trd = TRADES
-        subset = slice(str(startdate), str(enddate))
-        frm = trd.ix[subset]
-
-        lent = frm.price[(frm.direction == 'buy') & (frm.lotsize > 0)]
-        sent = frm.price[(frm.direction == 'short') & (frm.lotsize < 0)]
-        lex = frm.price[(frm.direction == 'sell') & (frm.lotsize < 0)]
-        sex = frm.price[(frm.direction == 'cover') & (frm.lotsize > 0)]
-
-        import matplotlib.pylab as pylab
-        if len(lent > 0):
-            pylab.plot(lent.index, lent.values, '^', color='lime', markersize=12,
-                       label='long enter')
-        if len(sent > 0):
-            pylab.plot(sent.index, sent.values, 'v', color='red', markersize=12,
-                       label='short enter')
-        if len(lex > 0):
-            pylab.plot(lex.index, lex.values, 'o', color='lime', markersize=7,
-                       label='long exit')
-        if len(sex > 0):
-            pylab.plot(sex.index, sex.values, 'o', color='red', markersize=7,
-                       label='short exit')
-
-        global OHLC
-        OHLC.open.ix[subset].plot(color='black', label='price')
-        global TICK_SIZE
-        eqt = TICKS.ix[subset].cumsum()*TICK_SIZE
-        idx = eqt.index
-        (eqt + OHLC.open[idx[0]]).plot(color='red', style='-')
-        OHLC.open.ix[idx[0]:idx[-1]].plot(color='black', label='price')
-        OHLC.open.ix[subset].plot(color='black', label='price')
-    else:
-        print 'No trades to plot!'
-
-
-def annual_gains(start, end):
-    ''' calculate annual gains '''
-    gains = []
-    years = []
-
-    if TRADES.lotsize.abs().mean() == 1:
-        for i in xrange(start, end+1, 1):
-            gain = (TRADES[str(i)].equity[-1] - TRADES[str(i)].equity[0])/EQUITY[0]
-            gains.append(gain*100)
-            years.append(i)
-    else:
-        for i in xrange(start, end+1, 1):
-            gain = (TRADES[str(i)].equity[-1] - TRADES[str(i)].equity[0])/TRADES[str(i)].equity[0]
-            gains.append(gain*100)
-            years.append(i)
-
-    #print 'Average annual gain ', round(pd.Series(gains).mean(), 2), '%'
-    _mean = pd.Series(gains).mean()
-    zipp = zip(gains, years)
-    df1 = pd.DataFrame(zipp)
-
-    df1.columns = ['gains', 'years']
-    df1['mean'] = _mean
-
-    fig = plt.figure()
-    ax1 = fig.add_subplot(212)
-    df1.plot(x='years', y='gains', ax=ax1, kind='bar', color='green')
-    #df1['mean'].plot(y='mean', ax=ax1, color='cyan', kind='line')
-    ax1.set_ylabel('Annual Returns (%)')
-    ax1.set_xlabel('')
-    plt.gcf().set_size_inches(8, 10)
-    plt.show()
 
 def max_draw(trades):
     ''' calculate draw down '''
@@ -214,6 +127,12 @@ def max_draw(trades):
 
     return maxdd*100, closs
 
+def _max_rolling_dd(ser):
+    ''' max dd calculations '''
+    max2here = pd.Series(ser).expanding().max()
+    dd2here = ser - max2here
+    return dd2here.min()
+
 class Amipy(object):
     """ initialize constants required for backtest """
     def __init__(self, SYMBOL, EQUITY, MARGIN, TICKVALUE, TICKSIZE, RISK, DATA):
@@ -223,10 +142,9 @@ class Amipy(object):
         self.tickvalue = TICKVALUE
         self.tick_size = TICKSIZE
         self.risk = RISK
-        global OHLC
-        OHLC = DATA
-        global TICK_SIZE
-        TICK_SIZE = TICKSIZE
+        self.trades = None
+        self.imp_equity = None
+        self.ohlc = DATA
 
     @numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
@@ -235,7 +153,7 @@ class Amipy(object):
         short = short.values
         buy = buy.values
         shortprice = shortprice.values
-        _open = OHLC.open.values
+        _open = self.ohlc.open.values
         mcover = np.zeros(len(short), dtype='int64')
 
         nnn = len(buy)
@@ -265,7 +183,7 @@ class Amipy(object):
         buyprice = buyprice.values
         nnn = len(buy)
         msell = np.zeros(nnn, dtype='int64')
-        _open = OHLC.open.values
+        _open = self.ohlc.open.values
 
         for i in xrange(nnn):
             if buy[i]:
@@ -283,6 +201,7 @@ class Amipy(object):
                         break
 
         return msell
+
 
     def run(self, buy, short, sell, cover, buyprice, shortprice, sellprice, coverprice):
         ''' calculate equity based on trade signals '''
@@ -303,7 +222,6 @@ class Amipy(object):
         myequity.fill(myeq)
         imp_equity.fill(myeq)
         mytrades = []
-        myticks = []
         mvalue = np.zeros(1, dtype='float64')
 
 
@@ -322,7 +240,7 @@ class Amipy(object):
                 loceq = myequity[i]
                 mytrades.append({'index': short.index[i], 'direction': 'short',
                                  'lotsize': -lot_size, 'price': shortprice[i],
-                                 'value': 0, 'equity': myequity[i]})
+                                 'value': 0, 'equity': myequity[i], 'ticks': 0})
 
                 for cnt, col1, col2, col3 in izip(count(), cover.values[i+1:],
                                                   coverprice.values[i+1:], buy.values[i+1:]):
@@ -338,7 +256,6 @@ class Amipy(object):
                         else:
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
-                        myticks.append({'index': cover.index[cnt+i+1], 'value': trd_ticks})
                         mvalue = np.append(mvalue, trd_val)
 
                         value = myeq + np.sum(mvalue)
@@ -347,7 +264,7 @@ class Amipy(object):
 
                         mytrades.append({'index': cover.index[cnt+i+1], 'direction': 'cover',
                                          'lotsize': lot_size, 'price': coverprice[cnt+i+1],
-                                         'value': trd_val, 'equity': value})
+                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks})
 
                         break
 
@@ -363,7 +280,7 @@ class Amipy(object):
 
                 mytrades.append({'index': buy.index[i], 'direction': 'buy',
                                  'lotsize': lot_size, 'price': buyprice[i],
-                                 'value': 0, 'equity': myequity[i]})
+                                 'value': 0, 'equity': myequity[i], 'ticks': 0})
 
                 for cnt, col1, col2, col3 in izip(count(), sell.values[i+1:],
                                                   sellprice.values[i+1:], short.values[i+1:]):
@@ -379,7 +296,6 @@ class Amipy(object):
                         else:
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
-                        myticks.append({'index': sell.index[cnt+i+1], 'value': trd_ticks})
                         mvalue = np.append(mvalue, trd_val)
 
                         value = myeq + np.sum(mvalue)
@@ -388,52 +304,43 @@ class Amipy(object):
 
                         mytrades.append({'index': sell.index[cnt+i+1], 'direction': 'sell',
                                          'lotsize': -lot_size, 'price': sellprice[cnt+i+1],
-                                         'value': trd_val, 'equity': value})
+                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks})
 
                         break
 
-        global TRADES
         mytrades = pd.DataFrame(mytrades).dropna()
         mytrades.set_index('index', drop=True, append=False, inplace=True, verify_integrity=False)
         mytrades.index = pd.to_datetime(mytrades.index)
         mytrades['symbol'] = self.symbol
-        TRADES = mytrades[:][['symbol', 'direction', 'lotsize', 'price', 'value', 'equity']]
-        TRADES = TRADES.sort_index()
-        #TRADES.to_csv('trades.csv')
-        global TICKS
-        TICKS = pd.DataFrame(myticks).dropna()
-        TICKS.set_index('index', drop=True, append=False, inplace=True, verify_integrity=False)
-        TICKS.index = pd.to_datetime(TICKS.index)
-        global EQUITY
-        EQUITY = myequity
-        global IMP_EQUITY
-        IMP_EQUITY = imp_equity
+        mytrades = mytrades[:][['symbol', 'direction', 'lotsize', 'price',
+                                'value', 'equity', 'ticks']]
+        mytrades = mytrades.sort_index()
+        self.trades = mytrades
+        self.imp_equity = imp_equity
+        #mytrades.to_csv('trades.csv')
 
-
-    def _max_dd(self, ser):
-        ''' max dd calculations '''
-        max2here = pd.Series(ser).expanding().max()
-        dd2here = ser - max2here
-        return dd2here.min()
 
     def analize_results(self, rfr):
         ''' analize trades '''
+        print 'Starting Equity: ' + str(self.trades['equity'][0])
+        print 'Final Equity: ' + str(self.trades['equity'][-1])
         pt_count = 0.0
         pt_short = 0.0
         t_short = 0.0
         t_long = 0.0
         pt_long = 0.0
-        total_trades = len(TRADES)/2
-        for i in xrange(len(TRADES)):
-            if TRADES['direction'][i] == 'short':
+        trades = self.trades
+        total_trades = len(trades)/2
+        for i in xrange(len(trades)):
+            if trades['direction'][i] == 'short':
                 t_short += 1
-            if TRADES['direction'][i] == 'buy':
+            if trades['direction'][i] == 'buy':
                 t_long += 1
-            if TRADES['value'][i] > 0:
+            if trades['value'][i] > 0:
                 pt_count += 1
-                if TRADES['direction'][i] == 'cover':
+                if trades['direction'][i] == 'cover':
                     pt_short += 1
-                if TRADES['direction'][i] == 'sell':
+                if trades['direction'][i] == 'sell':
                     pt_long += 1
 
         print 'Profitable trades: '+str(int(pt_count))
@@ -450,7 +357,7 @@ class Amipy(object):
             print 'Long winrate: ' + str(round(pt_long/t_long*100, 2)) + '%'
 
 
-        daily_ret = TRADES.equity.resample('1D').last().dropna().pct_change()
+        daily_ret = self.trades.equity.resample('1D').last().dropna().pct_change()
         daily_excess = daily_ret - rfr/252
         sharpe = np.sqrt(252) * daily_excess.mean() / daily_excess.std()
         print 'Sharpe: {:.2f} '.format(float(sharpe))
@@ -458,23 +365,23 @@ class Amipy(object):
         sortino = np.sqrt(252) * daily_excess.mean() / daily_excess[daily_excess < 0].std()
         print 'Sortino: {:.2f} '.format(float(sortino))
 
-        period = (OHLC.index[-1] - OHLC.index[0]).total_seconds() / (31557600)
-        cagr = (TRADES.equity.values[-1] / TRADES.equity.values[0]) ** (1/float(period))-1
+        period = (self.ohlc.index[-1] - self.ohlc.index[0]).total_seconds() / (31557600)
+        cagr = (self.trades.equity.values[-1] / self.trades.equity.values[0]) ** (1/float(period))-1
         print 'CAGR: {:.2%} '.format(float(cagr))
 
-        tval = TRADES.value.values
+        tval = self.trades.value.values
         pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
         print 'Profit factor: {:.2f}'.format(pfr)
 
-        new_equity = TRADES.equity[(TRADES.equity != TRADES.equity.shift(1))]
+        new_equity = self.trades.equity[(self.trades.equity != self.trades.equity.shift(1))]
         rolling_dd = new_equity.rolling(min_periods=0, window=10,
-                                        center=False).apply(func=self._max_dd)
+                                        center=False).apply(func=_max_rolling_dd)
 
         zipp = zip(new_equity, rolling_dd)
         df1 = pd.DataFrame(zipp, index=new_equity.index)
         df1.columns = ['Equity', 'Drawdown']
 
-        maxdd, closs = max_draw(TRADES)
+        maxdd, closs = max_draw(trades)
         print 'Consecutive losses: ' + str(closs)
         print 'Max drawdown: ' + str(round(maxdd, 2))+'%'
 
@@ -485,3 +392,83 @@ class Amipy(object):
         ax1.set_xlabel('')
         plt.gcf().set_size_inches(8, 10)
         plt.show()
+
+    def plot_trades(self, startdate, enddate):
+        ''' plot trades '''
+        if len(self.trades > 0):
+            trd = self.trades
+            subset = slice(str(startdate), str(enddate))
+            frm = trd.ix[subset]
+
+            lent = frm.price[(frm.direction == 'buy') & (frm.lotsize > 0)]
+            sent = frm.price[(frm.direction == 'short') & (frm.lotsize < 0)]
+            lex = frm.price[(frm.direction == 'sell') & (frm.lotsize < 0)]
+            sex = frm.price[(frm.direction == 'cover') & (frm.lotsize > 0)]
+
+            if len(lent > 0):
+                pylab.plot(lent.index, lent.values, '^', color='lime', markersize=12,
+                           label='long enter')
+            if len(sent > 0):
+                pylab.plot(sent.index, sent.values, 'v', color='red', markersize=12,
+                           label='short enter')
+            if len(lex > 0):
+                pylab.plot(lex.index, lex.values, 'o', color='lime', markersize=7,
+                           label='long exit')
+            if len(sex > 0):
+                pylab.plot(sex.index, sex.values, 'o', color='red', markersize=7,
+                           label='short exit')
+
+
+            self.ohlc.open.ix[subset].plot(color='black', label='price')
+            eqt = pd.DataFrame(self.trades.ticks[subset].cumsum()*self.tick_size)
+            eqt.columns = ['value']
+            idx = eqt.index
+
+            (eqt + self.ohlc.open[idx[0]]).plot(color='red', style='-', label='value')
+            self.ohlc.close.ix[subset].plot(color='black', label='price')
+        else:
+            print 'No trades to plot!'
+
+
+    def annual_gains(self, start, end):
+        ''' calculate annual gains '''
+        gains = []
+        years = []
+
+        if self.trades.lotsize.abs().mean() == 1:
+            for i in xrange(start, end+1, 1):
+                gain = (self.trades[str(i)].equity[-1] - \
+                                    self.trades[str(i)].equity[0])/self.trades.equity[0]
+                gains.append(gain*100)
+                years.append(i)
+        else:
+            for i in xrange(start, end+1, 1):
+                gain = (self.trades[str(i)].equity[-1] - \
+                                    self.trades[str(i)].equity[0])/self.trades[str(i)].equity[0]
+                gains.append(gain*100)
+                years.append(i)
+
+        _mean = pd.Series(gains).mean()
+        zipp = zip(gains, years)
+        df1 = pd.DataFrame(zipp)
+
+        df1.columns = ['gains', 'years']
+        df1['mean'] = _mean
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(212)
+        df1.plot(x='years', y='gains', ax=ax1, kind='bar', color='green')
+        ax1.set_ylabel('Annual Returns (%)')
+        ax1.set_xlabel('')
+        plt.gcf().set_size_inches(8, 10)
+        plt.show()
+
+    def analize_results_ffn(self, rfr):
+        ''' analize performance with ffn'''
+        data = self.trades.equity.resample('1D').last().dropna()
+        myffn = PerformanceStats(data, rfr)
+        myffn.display()
+        print '\n'
+        myffn.display_monthly_returns()
+        print '\n'
+        #print myffn.stats

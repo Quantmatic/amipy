@@ -82,13 +82,11 @@ class BoliingerCMF(object):
         backtest.run(buy, short, sell, cover, buyprice,
                      shortprice, sellprice, coverprice)
 
-        last_equity = amipy.TRADES['equity'][-1]
         print 'Backtest finished in ' + str(time.time()-ptimer) + ' seconds.\n'
-        print 'Starting Equity: ' + str(self.starting_equity)
-        print 'Final Equity: ' + str(last_equity)
-
         backtest.analize_results(0.05)
-        amipy.analize_results_ffn(0.05)
+        backtest.analize_results_ffn(0.05)
+        backtest.annual_gains(2011, 2016)
+        backtest.plot_trades(2011, 2016)
 
 class Context(object):
     ''' backtest context '''
@@ -113,6 +111,3 @@ if __name__ == '__main__':
     STRAT = BoliingerCMF(OBJ)
 
     STRAT.Run(OHLC)
-
-    amipy.annual_gains(2011, 2016)
-    amipy.plot_trades(2011, 2016)
