@@ -224,7 +224,6 @@ class Amipy(object):
         mytrades = []
         mvalue = np.zeros(1, dtype='float64')
 
-
         for i, item in enumerate(zip(buy.values, short.values, sell.values, cover.values,
                                      buyprice.values, shortprice.values, sellprice.values,
                                      coverprice.values)):
@@ -320,7 +319,7 @@ class Amipy(object):
         #mytrades.to_csv('trades.csv')
 
 
-    def analize_results(self, rfr):
+    def analyze_results(self, rfr):
         ''' analize trades '''
         print 'Starting Equity: ' + str(self.trades['equity'][0])
         print 'Final Equity: ' + str(self.trades['equity'][-1])
@@ -463,7 +462,7 @@ class Amipy(object):
         plt.gcf().set_size_inches(8, 10)
         plt.show()
 
-    def analize_results_ffn(self, rfr):
+    def analyze_results_ffn(self, rfr):
         ''' analize performance with ffn'''
         data = self.trades.equity.resample('1D').last().dropna()
         myffn = PerformanceStats(data, rfr)

@@ -83,8 +83,8 @@ class BoliingerCMF(object):
                      shortprice, sellprice, coverprice)
 
         print 'Backtest finished in ' + str(time.time()-ptimer) + ' seconds.\n'
-        backtest.analize_results(0.05)
-        backtest.analize_results_ffn(0.05)
+        backtest.analyze_results(0.05)
+        backtest.analyze_results_ffn(0.05)
         backtest.annual_gains(2011, 2016)
         backtest.plot_trades(2011, 2016)
 
