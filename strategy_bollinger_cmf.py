@@ -33,7 +33,7 @@ class BoliingerCMF(object):
 
 
     def Run(self, data):
-        ''' analize OHLCV matrix and generate signals '''
+        ''' analyze OHLCV matrix and generate signals '''
         ohlc = data[:][['open', 'high', 'low', 'close', 'volume']]
         ptimer = time.time()
 
