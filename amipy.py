@@ -320,7 +320,7 @@ class Amipy(object):
 
 
     def analyze_results(self, rfr):
-        ''' analize trades '''
+        ''' analyze trades '''
         print 'Starting Equity: ' + str(self.trades['equity'][0])
         print 'Final Equity: ' + str(self.trades['equity'][-1])
         pt_count = 0.0
@@ -463,7 +463,7 @@ class Amipy(object):
         plt.show()
 
     def analyze_results_ffn(self, rfr):
-        ''' analize performance with ffn'''
+        ''' analyze performance with ffn'''
         data = self.trades.equity.resample('1D').last().dropna()
         myffn = PerformanceStats(data, rfr)
         myffn.display()
