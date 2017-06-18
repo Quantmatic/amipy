@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
+# pylint: disable=no-member
 """
 Created on Tue May 16 11:26:03 2017
 @author: github.com/Quantmatic
@@ -12,7 +13,7 @@ import matplotlib.pylab as pylab
 from pymongo import MongoClient
 import numpy as np
 from ffn import PerformanceStats
-import numba
+#import numba
 
 
 def df_resample(dframe, interval):
@@ -53,7 +54,7 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
         return resampled_df
 
 
-@numba.jit
+#@numba.jit
 def __remove(array1, array2, maxtrades=1):
     """ Remove excessive signals """
     nnn = len(array1)
@@ -100,12 +101,13 @@ def max_draw(trades):
     closs = 0 #consecutive losses
     trades = trades.equity.sort_index()
     trades = trades[trades != trades.shift(1)].values
-    iterator = -1
+    nnn = len(trades)
 
-    for i, item in izip(count(), trades):
-        if i > iterator:
-            if item > maxeq:
-                maxeq = item
+    i = 0
+    while i < nnn:
+        item = trades[i]
+        if item > maxeq:
+            maxeq = item
 
             loss = 0
             drawd = 0
@@ -120,11 +122,12 @@ def max_draw(trades):
                         closs = loss
 
                 if col > maxeq:
-                    iterator = j
+                    i += j
                     break
                 if col > trades[j+cnt-1]:
                     loss = 0
 
+        i += 1
     return maxdd*100, closs
 
 def _max_rolling_dd(ser):
@@ -135,18 +138,13 @@ def _max_rolling_dd(ser):
 
 class Amipy(object):
     """ initialize constants required for backtest """
-    def __init__(self, SYMBOL, EQUITY, MARGIN, TICKVALUE, TICKSIZE, RISK, DATA):
-        self.symbol = SYMBOL
-        self.starting_equity = EQUITY
-        self.margin_required = MARGIN
-        self.tickvalue = TICKVALUE
-        self.tick_size = TICKSIZE
-        self.risk = RISK
+    def __init__(self, CONTEXT, DATA):
+        self.__dict__.update(CONTEXT.__dict__)
         self.trades = None
         self.imp_equity = None
         self.ohlc = DATA
 
-    @numba.jit
+    #@numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
         ''' apply stops on short trades '''
         tsize = self.tick_size
@@ -174,7 +172,7 @@ class Amipy(object):
 
         return mcover
 
-    @numba.jit
+    #@numba.jit
     def apply_stops_sell(self, buy, short, buyprice, stoploss, takeprofit):
         ''' apply stops on long trades '''
         tsize = self.tick_size
@@ -215,6 +213,7 @@ class Amipy(object):
         shortprice = shortprice[idx]
         sellprice = sellprice[idx]
         coverprice = coverprice[idx]
+        _open = self.ohlc.open[idx].values
 
         myeq = self.starting_equity
         myequity = np.empty(len(buy))
@@ -232,6 +231,8 @@ class Amipy(object):
 
                 if self.risk == 0.0:
                     lot_size = 1
+                elif self.margin_required == 0:
+                    lot_size = int(myequity[i] / _open[i] * self.risk)
                 else:
                     lot_size = int(myequity[i] / self.margin_required * self.risk)
 
@@ -245,13 +246,16 @@ class Amipy(object):
                                                   coverprice.values[i+1:], buy.values[i+1:]):
 
                     trd_ticks = (item[5] - col2) / self.tick_size
-                    trd_val = trd_ticks * self.tickvalue * lot_size
+                    commission = self.commission * lot_size
+                    trd_val = (trd_ticks * self.tick_value * lot_size) - commission
                     imp_equity[cnt+i+1] = loceq + trd_val
 
                     if (col1 == item[1]) | (col3 > 0):
 
                         if self.risk == 0.0:
                             lot_size = 1
+                        elif self.margin_required == 0:
+                            lot_size = int(myequity[i] / _open[i] * self.risk)
                         else:
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
@@ -271,6 +275,8 @@ class Amipy(object):
 
                 if self.risk == 0.0:
                     lot_size = 1
+                elif self.margin_required == 0:
+                    lot_size = int(myequity[i] / _open[i] * self.risk)
                 else:
                     lot_size = int(myequity[i] / self.margin_required * self.risk)
 
@@ -285,13 +291,16 @@ class Amipy(object):
                                                   sellprice.values[i+1:], short.values[i+1:]):
 
                     trd_ticks = (col2 - item[4]) / self.tick_size
-                    trd_val = trd_ticks * self.tickvalue * lot_size
+                    commission = self.commission * lot_size
+                    trd_val = (trd_ticks * self.tick_value * lot_size) - commission
                     imp_equity[cnt+i+1] = loceq + trd_val
 
                     if (col1 > 0) | (col3 > 0):
 
                         if self.risk == 0.0:
                             lot_size = 1
+                        elif self.margin_required == 0:
+                            lot_size = int(myequity[i] / _open[i] * self.risk)
                         else:
                             lot_size = int(myequity[i] / self.margin_required * self.risk)
 
@@ -316,7 +325,7 @@ class Amipy(object):
         mytrades = mytrades.sort_index()
         self.trades = mytrades
         self.imp_equity = imp_equity
-        #mytrades.to_csv('trades.csv')
+        mytrades.to_csv('trades.csv')
 
 
     def analyze_results(self, rfr):
@@ -373,7 +382,7 @@ class Amipy(object):
         print 'Profit factor: {:.2f}'.format(pfr)
 
         new_equity = self.trades.equity[(self.trades.equity != self.trades.equity.shift(1))]
-        rolling_dd = new_equity.rolling(min_periods=0, window=10,
+        rolling_dd = new_equity.rolling(min_periods=1, window=2,
                                         center=False).apply(func=_max_rolling_dd)
 
         zipp = zip(new_equity, rolling_dd)
