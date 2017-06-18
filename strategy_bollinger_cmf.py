@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
+# pylint: disable=no-member
 """
 Created on Tue May 16 11:42:45 2017
 @author: github.com/Quantmatic
@@ -23,14 +24,7 @@ def _days(_df):
 class BoliingerCMF(object):
     ''' Bollinger CMF '''
     def __init__(self, context):
-        self.symbol = context.symbol
-        self.starting_equity = context.starting_equity
-        self.margin_required = context.margin_required
-        self.tick_size = context.tick_size
-        self.tick_value = context.tick_value
-        self.risk = context.risk
-        self.warmup_bars = context.warmup_bars
-
+        self.__dict__.update(context.__dict__)
 
     def Run(self, data):
         ''' analyze OHLCV matrix and generate signals '''
@@ -76,17 +70,17 @@ class BoliingerCMF(object):
         coverprice = ohlc.open + (1*self.tick_size)
         sellprice = ohlc.open - (1*self.tick_size)
 
-        backtest = Amipy(self.symbol, self.starting_equity, self.margin_required,
-                         self.tick_value, self.tick_size, self.risk, ohlc)
+        backtest = Amipy(self, ohlc)
 
         backtest.run(buy, short, sell, cover, buyprice,
                      shortprice, sellprice, coverprice)
 
         print 'Backtest finished in ' + str(time.time()-ptimer) + ' seconds.\n'
-        backtest.analyze_results(0.05)
-        backtest.analyze_results_ffn(0.05)
-        backtest.annual_gains(2011, 2016)
+        backtest.analyze_results(0.0025)
+        backtest.analyze_results_ffn(0.0025)
         backtest.plot_trades(2011, 2016)
+        backtest.annual_gains(2011, 2016)
+
 
 class Context(object):
     ''' backtest context '''
@@ -99,7 +93,7 @@ class Context(object):
         self.tick_value = 12.5
         self.risk = 0.2
         self.warmup_bars = 500
-
+        self.commission = 4.50
 
 if __name__ == '__main__':
     ##########################################################################
