@@ -78,8 +78,8 @@ class BoliingerCMF(object):
         print 'Backtest finished in ' + str(time.time()-ptimer) + ' seconds.\n'
         backtest.analyze_results(0.0025)
         backtest.analyze_results_ffn(0.0025)
-        backtest.plot_trades(2011, 2016)
-        backtest.annual_gains(2011, 2016)
+        backtest.plot_trades(ohlc.index[0].year, ohlc.index[-1].year)
+        backtest.annual_gains(ohlc.index[0].year, ohlc.index[-1].year)
 
 
 class Context(object):
