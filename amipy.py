@@ -45,7 +45,7 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
     data = list(cursor)
     _df = pd.DataFrame(data)
     print('Symbol: ' + symbol)
-    print('Collection retrived in ' + str(time.time() - start) + \
+    print('Collection retrieved in ' + str(time.time() - start) + \
         ' seconds. ' + str(len(_df))+' Bars.\n')
     _df.set_index('datetime', drop=False, append=False, inplace=True, verify_integrity=False)
     _df.index = pd.to_datetime(_df.index)
