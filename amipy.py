@@ -6,11 +6,6 @@ Created on Tue May 16 11:26:03 2017
 @author: github.com/Quantmatic
 """
 from __future__ import print_function, division
-from builtins import zip
-from builtins import str
-from builtins import range
-from builtins import object
-import time
 from itertools import count
 import pandas as pd
 import numpy as np
@@ -27,12 +22,12 @@ def df_resample(dframe, interval):
                                              'high': 'max',
                                              'low': 'min',
                                              'close': 'last',
-                                             'volume': 'sum',
-                                             'oi': 'last'})
+                                             'volume': 'sum'})
+
     _df = pd.DataFrame(_result).dropna(axis=0)
 
-    _df[['volume', 'oi']] = _df[['volume', 'oi']].fillna(0.0).astype(int)
-    return _df[:][['open', 'high', 'low', 'close', 'volume', 'oi']]
+    _df[['volume']] = _df[['volume']].fillna(0.0).astype(int)
+    return _df[:][['open', 'high', 'low', 'close', 'volume']]
 
 
 def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=False):
@@ -40,23 +35,18 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
     client = MongoClient()
     dbase = client[dbname]
     collection = dbase[symbol]
-    start = time.time()
     cursor = collection.find({'datetime': {'$gte': startdate, '$lt': enddate}})
     data = list(cursor)
     _df = pd.DataFrame(data)
-    print('Symbol: ' + symbol)
-    print('Collection retrieved in ' + str(time.time() - start) + \
-        ' seconds. ' + str(len(_df))+' Bars.\n')
+    _df.columns = _df.columns.str.lower()
     _df.set_index('datetime', drop=False, append=False, inplace=True, verify_integrity=False)
     _df.index = pd.to_datetime(_df.index)
-    _df = _df[:][['open', 'high', 'low', 'close', 'volume', 'oi']]
-    if not resample:
-        return _df
-    else:
-        start = time.time()
+    _df = _df[:][['open', 'high', 'low', 'close', 'volume']]
+    if resample:
         resampled_df = df_resample(_df, interval)
-        print('Resample finished in ' + str(time.time() - start) + ' seconds.\n')
         return resampled_df
+
+    return _df
 
 
 #@numba.jit
@@ -69,12 +59,12 @@ def __remove(array1, array2, maxtrades=1):
     while i < nnn:
         if array1[i]:
             output[i] = 1
-            count = 1
+            cnt = 1
             j = i+1
             while j < nnn:
                 if array1[j]:
-                    count += 1
-                    if count > maxtrades:
+                    cnt += 1
+                    if cnt > maxtrades:
                         output[j] = 0
                     else:
                         output[j] = 1
@@ -99,47 +89,83 @@ def ex_rem(array1, array2, maxtrades=1):
     return pd.Series(ret, index=idx, dtype=bool)
 
 
-def max_draw(trades):
-    ''' calculate draw down '''
-    maxeq = 0
-    maxdd = 0 #maxdd
-    closs = 0 #consecutive losses
-    trades = trades.equity.sort_index()
-    trades = trades[trades != trades.shift(1)].values
-    nnn = len(trades)
+def _max_draw(equity):
+    ''' calculate drawdown '''
+    return (equity / equity.expanding(min_periods=1).max()).min() - 1
 
-    i = 0
-    while i < nnn:
-        item = trades[i]
-        if item > maxeq:
-            maxeq = item
 
-            loss = 0
-            drawd = 0
-            cnt = i+1
-            for j, col in enumerate(trades[cnt:]):
-                if col < trades[j+cnt-1]:
-                    loss += 1
-                    drawd = (item - col) / item
-                    if drawd > maxdd:
-                        maxdd = drawd
-                    if loss > closs:
-                        closs = loss
+def _consecutive_loss(equity):
+    ''' calculate consecutive losses '''
+    equity = equity[equity != equity.shift(1)]
+    temp = (equity < equity.shift(1)).astype(int)
+    closs = temp.groupby((temp != temp.shift(1)).cumsum()).cumsum().max()
+    return closs
 
-                if col > maxeq:
-                    i += j
-                    break
-                if col > trades[j+cnt-1]:
-                    loss = 0
-
-        i += 1
-    return maxdd*100, closs
 
 def _max_rolling_dd(ser):
     ''' max dd calculations '''
     max2here = pd.Series(ser).expanding().max()
     dd2here = ser - max2here
     return dd2here.min()
+
+
+def analyze_portfolio(portfolio, rfr, plot=True):
+    ''' analyze portfolio '''
+    portfolio = portfolio.fillna(method='ffill')
+    portfolio = portfolio.fillna(method='bfill')
+    portfolio['Total'] = portfolio.sum(axis=1)
+    portfolio = portfolio.dropna()
+
+    total_ret = (portfolio['Total'][-1] - portfolio['Total'][0])/portfolio['Total'][0]
+    daily_ret = portfolio.Total.resample('1D').last().dropna().pct_change()
+    daily_excess = daily_ret - rfr/252
+    sharpe = 252**0.5 * daily_excess.mean() / daily_excess.std()
+    sortino = 252**0.5 * daily_excess.mean() / daily_excess[daily_excess < 0].std()
+    period = (portfolio.index[-1] - portfolio.index[0]).total_seconds() / (31557600)
+    cagr = (portfolio.Total.values[-1] / portfolio.Total.values[0]) ** (1/float(period))-1
+    maxdd = _max_draw(portfolio.Total)
+
+    print('Starting Portfolio Equity: ' + str(portfolio['Total'][0]))
+    print('Final Portfolio Equity: ' + str(portfolio['Total'][-1]))
+    print('Total return: {:.2%} '.format(float(total_ret)))
+    print('Daily return: {:.2%} '.format(float(daily_ret.mean())))
+    print('Risk: {:.2%} '.format(float(daily_ret.std())))
+    print('Sharpe: {:.2f} '.format(float(sharpe)))
+    print('Sortino: {:.2f} '.format(float(sortino)))
+    print('CAGR: {:.2%} '.format(float(cagr)))
+    print('Max drawdown: {:.2%} '.format(float(maxdd)))
+
+    if plot:
+        new_equity = portfolio.Total[(portfolio.Total != portfolio.Total.shift(1))]
+        rolling_dd = new_equity.rolling(min_periods=1, window=2,
+                                        center=False).apply(func=_max_rolling_dd)
+
+        zipp = list(zip(new_equity, rolling_dd))
+        df1 = pd.DataFrame(zipp, index=new_equity.index)
+        df1.columns = ['Equity', 'Drawdown']
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(211)
+        df1.plot(ax=ax1)
+        ax1.set_ylabel('Portfolio value (USD)')
+        ax1.set_xlabel('')
+        plt.gcf().set_size_inches(8, 10)
+        plt.show()
+
+
+def analyze_portfolio_ffn(portfolio, rfr):
+    ''' analyze portfolio with ffn'''
+    portfolio = portfolio.fillna(method='ffill')
+    portfolio = portfolio.fillna(method='bfill')
+    portfolio['Total'] = portfolio.sum(axis=1)
+    portfolio = portfolio.dropna()
+    myffn = PerformanceStats(portfolio.Total, rfr)
+    myffn.display()
+    print('\n')
+    myffn.display_monthly_returns()
+    print('\n')
+    #print(myffn.stats)
+
 
 class Amipy(object):
     """ initialize constants required for backtest """
@@ -148,6 +174,7 @@ class Amipy(object):
         self.trades = None
         self.imp_equity = None
         self.ohlc = DATA
+        self.stats = {}
 
     #@numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
@@ -204,7 +231,6 @@ class Amipy(object):
                         break
 
         return msell
-
 
     def run(self, buy, short, sell, cover, buyprice, shortprice, sellprice, coverprice):
         ''' calculate equity based on trade signals '''
@@ -330,34 +356,26 @@ class Amipy(object):
         mytrades = mytrades.sort_index()
         self.trades = mytrades
         self.imp_equity = imp_equity
-        mytrades.to_csv('trades.csv')
+        #mytrades.to_csv('trades.csv')
 
-
-    def analyze_results(self, rfr):
+    def analyze_results(self, rfr, plot=True):
         ''' analyze trades '''
-        print('Starting Equity: ' + str(self.trades['equity'][0]))
-        print('Final Equity: ' + str(self.trades['equity'][-1]))
-        pt_count = 0.0
-        pt_short = 0.0
-        t_short = 0.0
-        t_long = 0.0
-        pt_long = 0.0
         trades = self.trades
-        total_trades = len(trades)/2
-        for i in range(len(trades)):
-            if trades['direction'][i] == 'short':
-                t_short += 1
-            if trades['direction'][i] == 'buy':
-                t_long += 1
-            if trades['value'][i] > 0:
-                pt_count += 1
-                if trades['direction'][i] == 'cover':
-                    pt_short += 1
-                if trades['direction'][i] == 'sell':
-                    pt_long += 1
+        total_ret = (trades.equity[-1] - trades.equity[0]) / trades.equity[0]
+        t_short = len(trades[trades.direction == 'short'])
+        t_long = len(trades[trades.direction == 'buy'])
+        pt_count = len(trades[trades.value > 0])
+        pt_short = len(trades[(trades.value > 0) & (trades.direction == 'cover')])
+        pt_long = len(trades[(trades.value > 0) & (trades.direction == 'sell')])
+        total_trades = t_long + t_short
 
+        print(self.symbol)
+        print('Starting Equity: ' + str(trades['equity'][0]))
+        print('Final Equity: ' + str(trades['equity'][-1]))
+        print('Total return: {:.2%} '.format(float(total_ret)))
         print('Profitable trades: '+str(int(pt_count)))
         print('Losing trades: '+str(int(total_trades - pt_count)))
+
         if total_trades > 0:
             winners = pt_count / total_trades*100
             print('Winrate: ' + str(round(winners, 2)) + '%')
@@ -369,46 +387,62 @@ class Amipy(object):
         if t_long > 0:
             print('Long winrate: ' + str(round(pt_long/t_long*100, 2)) + '%')
 
+        temp = trades.equity.resample('1D').last().dropna()
+        temp.name = self.symbol
+        idx = self.ohlc.close.resample('1D').last().index
+        equity = pd.DataFrame(temp, index=idx).fillna(method='ffill').fillna(method='bfill')
+        equity = equity.dropna()
+        daily_ret = equity[self.symbol].pct_change()
 
-        daily_ret = self.trades.equity.resample('1D').last().dropna().pct_change()
+        self.stats['symbol'] = self.symbol
+        self.stats['daily_return'] = round(daily_ret.mean(), 4)
+        self.stats['daily_risk'] = round(daily_ret.std(), 4)
         daily_excess = daily_ret - rfr/252
-        sharpe = np.sqrt(252) * daily_excess.mean() / daily_excess.std()
-        print('Sharpe: {:.2f} '.format(float(sharpe)))
-
-        sortino = np.sqrt(252) * daily_excess.mean() / daily_excess[daily_excess < 0].std()
-        print('Sortino: {:.2f} '.format(float(sortino)))
-
+        sharpe = 252**0.5 * daily_excess.mean() / daily_excess.std()
+        self.stats['sharpe'] = round(sharpe, 3)
+        sortino = 252**0.5 * daily_excess.mean() / daily_excess[daily_excess < 0].std()
+        self.stats['sortino'] = round(sortino, 3)
         period = (self.ohlc.index[-1] - self.ohlc.index[0]).total_seconds() / (31557600)
-        cagr = (self.trades.equity.values[-1] / self.trades.equity.values[0]) ** (1/float(period))-1
-        print('CAGR: {:.2%} '.format(float(cagr)))
-
-        tval = self.trades.value.values
+        cagr = (trades.equity.values[-1] / trades.equity.values[0]) ** (1/float(period))-1
+        self.stats['cagr'] = round(cagr, 3)
+        tval = trades.value.values
         pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
+        self.stats['pfr'] = round(pfr, 3)
+        maxdd = _max_draw(trades.equity.sort_index())
+        closs = _consecutive_loss(trades.equity.sort_index())
+        self.stats['maxdd'] = round(maxdd, 3)
+
+        print('Daily return: {:.2%} '.format(float(daily_ret.mean())))
+        print('Risk: {:.2%} '.format(float(daily_ret.std())))
+        print('Sharpe: {:.2f} '.format(float(sharpe)))
+        print('Sortino: {:.2f} '.format(float(sortino)))
+        print('CAGR: {:.2%} '.format(float(cagr)))
         print('Profit factor: {:.2f}'.format(pfr))
-
-        new_equity = self.trades.equity[(self.trades.equity != self.trades.equity.shift(1))]
-        rolling_dd = new_equity.rolling(min_periods=1, window=2,
-                                        center=False).apply(func=_max_rolling_dd)
-
-        zipp = list(zip(new_equity, rolling_dd))
-        df1 = pd.DataFrame(zipp, index=new_equity.index)
-        df1.columns = ['Equity', 'Drawdown']
-
-        maxdd, closs = max_draw(trades)
         print('Consecutive losses: ' + str(closs))
-        print('Max drawdown: ' + str(round(maxdd, 2))+'%')
+        print('Max drawdown: {:.2%} '.format(float(maxdd)))
+        print('\n')
 
-        fig = plt.figure()
-        ax1 = fig.add_subplot(211)
-        df1.plot(ax=ax1)
-        ax1.set_ylabel('Portfolio value (USD)')
-        ax1.set_xlabel('')
-        plt.gcf().set_size_inches(8, 10)
-        plt.show()
+        if plot:
+            new_equity = trades.equity[(trades.equity != trades.equity.shift(1))]
+            rolling_dd = new_equity.rolling(min_periods=1, window=2,
+                                            center=False).apply(func=_max_rolling_dd)
+
+            zipp = list(zip(new_equity, rolling_dd))
+            df1 = pd.DataFrame(zipp, index=new_equity.index)
+            df1.columns = ['Equity', 'Drawdown']
+
+            fig = plt.figure()
+            ax1 = fig.add_subplot(211)
+            df1.plot(ax=ax1)
+            ax1.set_ylabel('Portfolio value (USD)')
+            ax1.set_xlabel('')
+            plt.gcf().set_size_inches(8, 10)
+            plt.show()
 
     def plot_trades(self, startdate, enddate):
         ''' plot trades '''
-        if len(self.trades > 0):
+        tlen = len(self.trades)
+        if tlen > 0:
             trd = self.trades
             subset = slice(str(startdate), str(enddate))
             frm = trd.ix[subset]
@@ -418,19 +452,18 @@ class Amipy(object):
             lex = frm.price[(frm.direction == 'sell') & (frm.lotsize < 0)]
             sex = frm.price[(frm.direction == 'cover') & (frm.lotsize > 0)]
 
-            if len(lent > 0):
+            if len(lent) > 0:
                 pylab.plot(lent.index, lent.values, '^', color='lime', markersize=12,
                            label='long enter')
-            if len(sent > 0):
+            if len(sent) > 0:
                 pylab.plot(sent.index, sent.values, 'v', color='red', markersize=12,
                            label='short enter')
-            if len(lex > 0):
+            if len(lex) > 0:
                 pylab.plot(lex.index, lex.values, 'o', color='lime', markersize=7,
                            label='long exit')
-            if len(sex > 0):
+            if len(sex) > 0:
                 pylab.plot(sex.index, sex.values, 'o', color='red', markersize=7,
                            label='short exit')
-
 
             self.ohlc.open.ix[subset].plot(color='black', label='price')
             eqt = pd.DataFrame(self.trades.ticks[subset].cumsum()*self.tick_size)
@@ -479,9 +512,13 @@ class Amipy(object):
     def analyze_results_ffn(self, rfr):
         ''' analyze performance with ffn'''
         data = self.trades.equity.resample('1D').last().dropna()
-        myffn = PerformanceStats(data, rfr)
+        data.name = self.symbol
+        idx = self.ohlc.close.resample('1D').last().index
+        equity = pd.DataFrame(data, index=idx).fillna(method='ffill').fillna(method='bfill')
+        equity = equity.dropna()
+        myffn = PerformanceStats(equity[self.symbol], rfr)
         myffn.display()
         print('\n')
         myffn.display_monthly_returns()
         print('\n')
-        #print myffn.stats
+        #print(myffn.stats)
