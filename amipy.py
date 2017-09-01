@@ -114,7 +114,6 @@ def analyze_portfolio(portfolio, rfr, plot=True):
     portfolio = portfolio.fillna(method='ffill')
     portfolio = portfolio.fillna(method='bfill')
     portfolio['Total'] = portfolio.sum(axis=1)
-    portfolio = portfolio.dropna()
 
     total_ret = (portfolio['Total'][-1] - portfolio['Total'][0])/portfolio['Total'][0]
     daily_ret = portfolio.Total.resample('1D').last().dropna().pct_change()
@@ -148,9 +147,10 @@ def analyze_portfolio(portfolio, rfr, plot=True):
         ax1 = fig.add_subplot(211)
         df1.plot(ax=ax1)
         ax1.set_ylabel('Portfolio value (USD)')
-        ax1.set_xlabel('')
+        ax1.set_xlabel('Equity')
         plt.gcf().set_size_inches(8, 10)
         plt.show()
+        plt.close()
 
 
 def analyze_portfolio_ffn(portfolio, rfr):
@@ -158,7 +158,6 @@ def analyze_portfolio_ffn(portfolio, rfr):
     portfolio = portfolio.fillna(method='ffill')
     portfolio = portfolio.fillna(method='bfill')
     portfolio['Total'] = portfolio.sum(axis=1)
-    portfolio = portfolio.dropna()
     myffn = PerformanceStats(portfolio.Total, rfr)
     myffn.display()
     print('\n')
@@ -178,7 +177,7 @@ class Amipy(object):
 
     #@numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
-        ''' apply stops on short trades '''
+        ''' apply tick based stops on short trades '''
         tsize = self.tick_size
         short = short.values
         buy = buy.values
@@ -206,7 +205,7 @@ class Amipy(object):
 
     #@numba.jit
     def apply_stops_sell(self, buy, short, buyprice, stoploss, takeprofit):
-        ''' apply stops on long trades '''
+        ''' apply tick based stops on long trades '''
         tsize = self.tick_size
         short = short.values
         buy = buy.values
@@ -227,6 +226,118 @@ class Amipy(object):
                         msell[cnt] = 1
                         break
                     elif short[cnt]:
+                        msell[cnt] = 1
+                        break
+
+        return msell
+
+    #@numba.jit
+    def apply_stops_cover_rq(self, buy, short, shortprice, stoploss, takeprofit):
+        ''' apply rolling quantile stops on short trades '''
+        tsize = self.tick_size
+        short = short.values
+        buy = buy.values
+        shortprice = shortprice.values
+        _open = self.ohlc.open.values
+        mcover = np.zeros(len(short), dtype='int64')
+
+        nnn = len(buy)
+        for i in range(nnn):
+            if short[i]:
+                topen = shortprice[i]
+                for cnt in range(i+1, nnn, 1):
+                    val = topen - _open[cnt]
+                    if val > takeprofit[i] * tsize:
+                        mcover[cnt] = 1
+                        break
+                    elif val < -stoploss[i] * tsize:
+                        mcover[cnt] = 1
+                        break
+                    elif buy[cnt]:
+                        mcover[cnt] = 1
+                        break
+
+        return mcover
+
+    #@numba.jit
+    def apply_stops_sell_rq(self, buy, short, buyprice, stoploss, takeprofit):
+        ''' apply rolling quantile stops on long trades '''
+        tsize = self.tick_size
+        short = short.values
+        buy = buy.values
+        buyprice = buyprice.values
+        nnn = len(buy)
+        msell = np.zeros(nnn, dtype='int64')
+        _open = self.ohlc.open.values
+
+        for i in range(nnn):
+            if buy[i]:
+                topen = buyprice[i]
+                for cnt in range(i+1, nnn, 1):
+                    val = _open[cnt] - topen
+                    if val > takeprofit[i] * tsize:
+                        msell[cnt] = 1
+                        break
+                    elif val < -stoploss[i] * tsize:
+                        msell[cnt] = 1
+                        break
+                    elif short[cnt]:
+                        msell[cnt] = 1
+                        break
+
+        return msell
+
+    #@numba.jit
+    def apply_stops_cover_pct(self, buy, short, shortprice, stoploss, takeprofit):
+        ''' apply percentage based stops on short trades '''
+        short = short.values
+        buy = buy.values
+        nnn = len(buy)
+        shortprice = shortprice.values
+        mcover = np.zeros(nnn, dtype='int64')
+        _open = self.ohlc.open.values
+
+
+        for i in range(nnn):
+            if short[i]:
+                topen = shortprice[i]
+
+                for cnt in range(i+1, nnn, 1):
+                    val = topen - _open[cnt]
+                    if val/topen > takeprofit/100.0: #% gain
+                        mcover[cnt] = 1
+                        break
+                    elif val/topen < -stoploss/100.0:
+                        mcover[cnt] = 1
+                        break
+                    elif buy[cnt]: #opposite signal
+                        mcover[cnt] = 1
+                        break
+
+        return mcover
+
+    #@numba.jit
+    def apply_stops_sell_pct(self, buy, short, buyprice, stoploss, takeprofit):
+        ''' apply percentage based stops on long trades '''
+        short = short.values
+        buy = buy.values
+        buyprice = buyprice.values
+        nnn = len(buy)
+        msell = np.zeros(nnn, dtype='int64')
+        _open = self.ohlc.open.values
+
+        for i in range(nnn):
+            if buy[i]:
+                topen = buyprice[i]
+                for cnt in range(i+1, nnn, 1):
+                    val = _open[cnt] - topen
+                    if val/topen > takeprofit/100.0: #% gain
+                        msell[cnt] = 1
+                        break
+                    elif val/topen < -stoploss/100.0:
+                        msell[cnt] = 1
+                        break
+                    elif short[cnt]: #opposite signal
                         msell[cnt] = 1
                         break
 
@@ -358,10 +469,39 @@ class Amipy(object):
         self.imp_equity = imp_equity
         #mytrades.to_csv('trades.csv')
 
+    def analyze_results_silent(self, rfr):
+        ''' analyze trades '''
+        trades = self.trades
+        total_ret = (trades.equity[-1] - trades.equity[0]) / trades.equity[0]
+        self.stats['total_ret'] = round(total_ret, 3)
+        temp = trades.equity.resample('1D').last().dropna()
+        temp.name = self.symbol
+        idx = self.ohlc.close.resample('1D').last().index
+        equity = pd.DataFrame(temp, index=idx).fillna(method='ffill').fillna(method='bfill')
+        daily_ret = equity[self.symbol].pct_change()
+
+        self.stats['symbol'] = self.symbol
+        self.stats['daily_return'] = round(daily_ret.mean(), 4)
+        self.stats['daily_risk'] = round(daily_ret.std(), 4)
+        daily_excess = daily_ret - rfr/252
+        sharpe = 252**0.5 * daily_excess.mean() / daily_excess.std()
+        self.stats['sharpe'] = round(sharpe, 3)
+        sortino = 252**0.5 * daily_excess.mean() / daily_excess[daily_excess < 0].std()
+        self.stats['sortino'] = round(sortino, 3)
+        period = (self.ohlc.index[-1] - self.ohlc.index[0]).total_seconds() / (31557600)
+        cagr = (trades.equity.values[-1] / trades.equity.values[0]) ** (1/float(period))-1
+        self.stats['cagr'] = round(cagr, 3)
+        tval = trades.value.values
+        pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
+        self.stats['pfr'] = round(pfr, 3)
+        maxdd = _max_draw(trades.equity.sort_index())
+        self.stats['maxdd'] = round(maxdd, 3)
+
     def analyze_results(self, rfr, plot=True):
         ''' analyze trades '''
         trades = self.trades
         total_ret = (trades.equity[-1] - trades.equity[0]) / trades.equity[0]
+        self.stats['total_ret'] = round(total_ret, 3)
         t_short = len(trades[trades.direction == 'short'])
         t_long = len(trades[trades.direction == 'buy'])
         pt_count = len(trades[trades.value > 0])
@@ -391,7 +531,6 @@ class Amipy(object):
         temp.name = self.symbol
         idx = self.ohlc.close.resample('1D').last().index
         equity = pd.DataFrame(temp, index=idx).fillna(method='ffill').fillna(method='bfill')
-        equity = equity.dropna()
         daily_ret = equity[self.symbol].pct_change()
 
         self.stats['symbol'] = self.symbol
@@ -438,6 +577,7 @@ class Amipy(object):
             ax1.set_xlabel('')
             plt.gcf().set_size_inches(8, 10)
             plt.show()
+            plt.close()
 
     def plot_trades(self, startdate, enddate):
         ''' plot trades '''
@@ -452,6 +592,12 @@ class Amipy(object):
             lex = frm.price[(frm.direction == 'sell') & (frm.lotsize < 0)]
             sex = frm.price[(frm.direction == 'cover') & (frm.lotsize > 0)]
 
+            fig = plt.figure()
+            ax1 = fig.add_subplot(212)
+            plt.gcf().set_size_inches(8, 10)
+            ax1.set_ylabel('')
+            ax1.set_xlabel('')
+
             if len(lent) > 0:
                 pylab.plot(lent.index, lent.values, '^', color='lime', markersize=12,
                            label='long enter')
@@ -465,13 +611,24 @@ class Amipy(object):
                 pylab.plot(sex.index, sex.values, 'o', color='red', markersize=7,
                            label='short exit')
 
-            self.ohlc.open.ix[subset].plot(color='black', label='price')
+            temp = pd.DataFrame(self.ohlc.open.ix[subset])
+            temp.columns = [self.symbol+' Trades']
+            temp.plot(ax=ax1, color='black')
+            plt.show()
+            plt.close()
+
+            fig = plt.figure()
+            ax1 = fig.add_subplot(212)
+            plt.gcf().set_size_inches(8, 10)
+            ax1.set_ylabel('')
+            ax1.set_xlabel('')
             eqt = pd.DataFrame(self.trades.ticks[subset].cumsum()*self.tick_size)
             eqt.columns = ['value']
             idx = eqt.index
-
-            (eqt + self.ohlc.open[idx[0]]).plot(color='red', style='-', label='value')
-            self.ohlc.close.ix[subset].plot(color='black', label='price')
+            (eqt + self.ohlc.open[idx[0]]).plot(ax=ax1, color='red', style='-', label='value')
+            self.ohlc.close.ix[subset].plot(ax=ax1, color='black', label='price')
+            plt.show()
+            plt.close()
         else:
             print('No trades to plot!')
 
@@ -481,16 +638,21 @@ class Amipy(object):
         gains = []
         years = []
 
+        temp = self.trades.equity.resample('1D').last().dropna()
+        temp.name = 'equity'
+        idx = self.ohlc.close.resample('1D').last().index
+        equity = pd.DataFrame(temp, index=idx).fillna(method='ffill').fillna(method='bfill')
+
         if self.trades.lotsize.abs().mean() == 1:
             for i in range(start, end+1, 1):
-                gain = (self.trades[str(i)].equity[-1] - \
-                                    self.trades[str(i)].equity[0])/self.trades.equity[0]
+                gain = (equity[str(i)].equity[-1] - \
+                                    equity[str(i)].equity[0]) / equity.equity[0]
                 gains.append(gain*100)
                 years.append(i)
         else:
             for i in range(start, end+1, 1):
-                gain = (self.trades[str(i)].equity[-1] - \
-                                    self.trades[str(i)].equity[0])/self.trades[str(i)].equity[0]
+                gain = (equity[str(i)].equity[-1] - \
+                                    equity[str(i)].equity[0])/equity[str(i)].equity[0]
                 gains.append(gain*100)
                 years.append(i)
 
@@ -508,6 +670,7 @@ class Amipy(object):
         ax1.set_xlabel('')
         plt.gcf().set_size_inches(8, 10)
         plt.show()
+        plt.close()
 
     def analyze_results_ffn(self, rfr):
         ''' analyze performance with ffn'''
@@ -515,7 +678,6 @@ class Amipy(object):
         data.name = self.symbol
         idx = self.ohlc.close.resample('1D').last().index
         equity = pd.DataFrame(data, index=idx).fillna(method='ffill').fillna(method='bfill')
-        equity = equity.dropna()
         myffn = PerformanceStats(equity[self.symbol], rfr)
         myffn.display()
         print('\n')
