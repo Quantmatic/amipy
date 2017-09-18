@@ -34,19 +34,24 @@ def mongo_grab(symbol, dbname, startdate, enddate, interval='60min', resample=Fa
     ''' Grab the required stretch of quotes from MongoDB '''
     client = MongoClient()
     dbase = client[dbname]
-    collection = dbase[symbol]
-    cursor = collection.find({'datetime': {'$gte': startdate, '$lt': enddate}})
-    data = list(cursor)
-    _df = pd.DataFrame(data)
-    _df.columns = _df.columns.str.lower()
-    _df.set_index('datetime', drop=False, append=False, inplace=True, verify_integrity=False)
-    _df.index = pd.to_datetime(_df.index)
-    _df = _df[:][['open', 'high', 'low', 'close', 'volume']]
-    if resample:
-        resampled_df = df_resample(_df, interval)
-        return resampled_df
+    collections = dbase.collection_names()
+    if symbol in collections:
+        collection = dbase[symbol]
+        cursor = collection.find({'datetime': {'$gte': startdate, '$lt': enddate}})
+        data = list(cursor)
+        _df = pd.DataFrame(data)
+        _df.columns = _df.columns.str.lower()
+        _df.set_index('datetime', drop=False, append=False, inplace=True, verify_integrity=False)
+        _df.index = pd.to_datetime(_df.index)
+        _df = _df[:][['open', 'high', 'low', 'close', 'volume']]
+        if resample:
+            resampled_df = df_resample(_df, interval)
+            return resampled_df
 
-    return _df
+        return _df
+    else:
+        print('Error! Symbol not found in db! '+symbol)
+        return -1
 
 
 #@numba.jit
@@ -109,13 +114,41 @@ def _max_rolling_dd(ser):
     return dd2here.min()
 
 
+def _plot(_df, subplot=211, ylabel='', xlabel='', ysize=12, xsize=15, legend=False, title=''):
+    ''' make a plot '''
+    fig = plt.figure()
+    ax1 = fig.add_subplot(subplot)
+    _df.plot(ax=ax1)
+    ax1.set_ylabel(ylabel)
+    ax1.set_xlabel(xlabel)
+    ax1.legend().set_visible(legend)
+    plt.gcf().set_size_inches(ysize, xsize)
+    plt.title(title)
+    plt.show()
+    plt.close()
+
+
+def adjust_quotes(ohlc):
+    ''' remove stock splits for smooth backtests '''
+    i = len(ohlc)-1
+    data = ohlc.copy()
+    _open = ohlc.open.values
+    close = ohlc.close.values
+    temp = ['open', 'high', 'low', 'close']
+    while i > 1:
+        if _open[i] < _open[i-1]*0.8:
+            data.loc[ohlc.index[i:], temp] += close[i-1]-_open[i]
+
+        i -= 1
+
+    return data
+
+
 def analyze_portfolio(portfolio, rfr, plot=True):
     ''' analyze portfolio '''
-    portfolio = portfolio.fillna(method='ffill')
-    portfolio = portfolio.fillna(method='bfill')
+    portfolio = portfolio.fillna(method='ffill').fillna(method='bfill')
     portfolio['Total'] = portfolio.sum(axis=1)
-
-    total_ret = (portfolio['Total'][-1] - portfolio['Total'][0])/portfolio['Total'][0]
+    total_ret = portfolio.Total[-1] / portfolio.Total[0] - 1
     daily_ret = portfolio.Total.resample('1D').last().dropna().pct_change()
     daily_excess = daily_ret - rfr/252
     sharpe = 252**0.5 * daily_excess.mean() / daily_excess.std()
@@ -124,6 +157,7 @@ def analyze_portfolio(portfolio, rfr, plot=True):
     cagr = (portfolio.Total.values[-1] / portfolio.Total.values[0]) ** (1/float(period))-1
     maxdd = _max_draw(portfolio.Total)
 
+    print('\n')
     print('Starting Portfolio Equity: ' + str(portfolio['Total'][0]))
     print('Final Portfolio Equity: ' + str(portfolio['Total'][-1]))
     print('Total return: {:.2%} '.format(float(total_ret)))
@@ -147,18 +181,21 @@ def analyze_portfolio(portfolio, rfr, plot=True):
         ax1 = fig.add_subplot(211)
         df1.plot(ax=ax1)
         ax1.set_ylabel('Portfolio value (USD)')
-        ax1.set_xlabel('Equity')
-        plt.gcf().set_size_inches(8, 10)
+        ax1.set_xlabel('')
+        plt.gcf().set_size_inches(12, 15)
         plt.show()
         plt.close()
+
+    return {'total_ret': total_ret, 'sharpe': sharpe, 'sortino': sortino,
+            'cagr': cagr, 'maxdd': maxdd}
 
 
 def analyze_portfolio_ffn(portfolio, rfr):
     ''' analyze portfolio with ffn'''
-    portfolio = portfolio.fillna(method='ffill')
-    portfolio = portfolio.fillna(method='bfill')
+    portfolio = portfolio.fillna(method='ffill').fillna(method='bfill')
     portfolio['Total'] = portfolio.sum(axis=1)
     myffn = PerformanceStats(portfolio.Total, rfr)
+    print('\n')
     myffn.display()
     print('\n')
     myffn.display_monthly_returns()
@@ -472,7 +509,7 @@ class Amipy(object):
     def analyze_results_silent(self, rfr):
         ''' analyze trades '''
         trades = self.trades
-        total_ret = (trades.equity[-1] - trades.equity[0]) / trades.equity[0]
+        total_ret = trades.equity[-1] / trades.equity[0] - 1
         self.stats['total_ret'] = round(total_ret, 3)
         temp = trades.equity.resample('1D').last().dropna()
         temp.name = self.symbol
@@ -492,7 +529,7 @@ class Amipy(object):
         cagr = (trades.equity.values[-1] / trades.equity.values[0]) ** (1/float(period))-1
         self.stats['cagr'] = round(cagr, 3)
         tval = trades.value.values
-        pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
+        pfr = tval[tval > 0].sum() / max(abs(tval[tval < 0].sum()), 1)
         self.stats['pfr'] = round(pfr, 3)
         maxdd = _max_draw(trades.equity.sort_index())
         self.stats['maxdd'] = round(maxdd, 3)
@@ -500,7 +537,7 @@ class Amipy(object):
     def analyze_results(self, rfr, plot=True):
         ''' analyze trades '''
         trades = self.trades
-        total_ret = (trades.equity[-1] - trades.equity[0]) / trades.equity[0]
+        total_ret = trades.equity[-1] / trades.equity[0] - 1
         self.stats['total_ret'] = round(total_ret, 3)
         t_short = len(trades[trades.direction == 'short'])
         t_long = len(trades[trades.direction == 'buy'])
@@ -545,7 +582,7 @@ class Amipy(object):
         cagr = (trades.equity.values[-1] / trades.equity.values[0]) ** (1/float(period))-1
         self.stats['cagr'] = round(cagr, 3)
         tval = trades.value.values
-        pfr = tval[tval > 0].sum() / abs(tval[tval < 0].sum())
+        pfr = tval[tval > 0].sum() / max(abs(tval[tval < 0].sum()), 1)
         self.stats['pfr'] = round(pfr, 3)
         maxdd = _max_draw(trades.equity.sort_index())
         closs = _consecutive_loss(trades.equity.sort_index())
@@ -575,7 +612,7 @@ class Amipy(object):
             df1.plot(ax=ax1)
             ax1.set_ylabel('Portfolio value (USD)')
             ax1.set_xlabel('')
-            plt.gcf().set_size_inches(8, 10)
+            plt.gcf().set_size_inches(12, 15)
             plt.show()
             plt.close()
 
@@ -594,7 +631,7 @@ class Amipy(object):
 
             fig = plt.figure()
             ax1 = fig.add_subplot(212)
-            plt.gcf().set_size_inches(8, 10)
+            plt.gcf().set_size_inches(12, 15)
             ax1.set_ylabel('')
             ax1.set_xlabel('')
 
@@ -619,7 +656,7 @@ class Amipy(object):
 
             fig = plt.figure()
             ax1 = fig.add_subplot(212)
-            plt.gcf().set_size_inches(8, 10)
+            plt.gcf().set_size_inches(12, 15)
             ax1.set_ylabel('')
             ax1.set_xlabel('')
             eqt = pd.DataFrame(self.trades.ticks[subset].cumsum()*self.tick_size)
@@ -656,19 +693,16 @@ class Amipy(object):
                 gains.append(gain*100)
                 years.append(i)
 
-        _mean = pd.Series(gains).mean()
         zipp = list(zip(gains, years))
         df1 = pd.DataFrame(zipp)
-
         df1.columns = ['gains', 'years']
-        df1['mean'] = _mean
 
         fig = plt.figure()
         ax1 = fig.add_subplot(212)
         df1.plot(x='years', y='gains', ax=ax1, kind='bar', color='green')
         ax1.set_ylabel('Annual Returns (%)')
         ax1.set_xlabel('')
-        plt.gcf().set_size_inches(8, 10)
+        plt.gcf().set_size_inches(12, 15)
         plt.show()
         plt.close()
 
@@ -679,6 +713,7 @@ class Amipy(object):
         idx = self.ohlc.close.resample('1D').last().index
         equity = pd.DataFrame(data, index=idx).fillna(method='ffill').fillna(method='bfill')
         myffn = PerformanceStats(equity[self.symbol], rfr)
+        print('\n')
         myffn.display()
         print('\n')
         myffn.display_monthly_returns()
