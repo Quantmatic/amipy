@@ -211,6 +211,8 @@ class Amipy(object):
         self.imp_equity = None
         self.ohlc = DATA
         self.stats = {}
+        self.margin = 0
+        self.equity = 0
 
     #@numba.jit
     def apply_stops_cover(self, buy, short, shortprice, stoploss, takeprofit):
@@ -382,7 +384,8 @@ class Amipy(object):
 
     def run(self, buy, short, sell, cover, buyprice, shortprice, sellprice, coverprice):
         ''' calculate equity based on trade signals '''
-        idx = ((buy > 0) | (short > 0) | (sell > 0) | (cover > 0))
+        #idx = ((buy > 0) | (short > 0) | (sell > 0) | (cover > 0))
+        idx=buy.index
 
         buy = buy[idx]
         short = short[idx]
@@ -397,10 +400,12 @@ class Amipy(object):
         myeq = self.starting_equity
         myequity = np.empty(len(buy))
         imp_equity = np.empty(len(buy))
+        imargin = np.zeros(len(buy))
         myequity.fill(myeq)
         imp_equity.fill(myeq)
         mytrades = []
         mvalue = np.zeros(1, dtype='float64')
+
 
         for i, item in enumerate(zip(buy.values, short.values, sell.values, cover.values,
                                      buyprice.values, shortprice.values, sellprice.values,
@@ -410,16 +415,27 @@ class Amipy(object):
 
                 if self.risk == 0.0:
                     lot_size = 1
+                    umargin = self.margin_required  # used margin
+                    if self.margin_required == 0:
+                        umargin = _open[i]
                 elif self.margin_required == 0:
                     lot_size = int(myequity[i] / _open[i] * self.risk)
+                    umargin = _open[i] * lot_size
                 else:
                     lot_size = int(myequity[i] / self.margin_required * self.risk)
+                    umargin = lot_size * self.margin_required
 
+                if lot_size < 0 or myequity[i] < 0:
+                    continue
+
+                imargin[i] = imargin[i-1] + umargin
                 imp_equity[i] = myequity[i]
                 loceq = myequity[i]
+
                 mytrades.append({'index': short.index[i], 'direction': 'short',
                                  'lotsize': -lot_size, 'price': shortprice[i],
-                                 'value': 0, 'equity': myequity[i], 'ticks': 0})
+                                 'value': 0, 'equity': myequity[i], 'ticks': 0,
+                                 'umargin': umargin})
 
                 for cnt, col1, col2, col3 in zip(count(), cover.values[i+1:],
                                                  coverprice.values[i+1:], buy.values[i+1:]):
@@ -428,6 +444,7 @@ class Amipy(object):
                     commission = self.commission * lot_size
                     trd_val = (trd_ticks * self.tick_value * lot_size) - commission
                     imp_equity[cnt+i+1] = loceq + trd_val
+                    imargin[cnt+i+1] = imargin[cnt+i]
 
                     if (col1 == item[1]) | (col3 > 0):
 
@@ -443,10 +460,12 @@ class Amipy(object):
                         value = myeq + np.sum(mvalue)
                         myequity[cnt+i+1:] = value
                         imp_equity[cnt+i+1:] = value
+                        imargin[cnt+i+1] = 0
 
                         mytrades.append({'index': cover.index[cnt+i+1], 'direction': 'cover',
                                          'lotsize': lot_size, 'price': coverprice[cnt+i+1],
-                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks})
+                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks,
+                                         'umargin': 0})
 
                         break
 
@@ -454,17 +473,27 @@ class Amipy(object):
 
                 if self.risk == 0.0:
                     lot_size = 1
+                    umargin = self.margin_required  # used margin
+                    if self.margin_required == 0:
+                        umargin = _open[i]
                 elif self.margin_required == 0:
                     lot_size = int(myequity[i] / _open[i] * self.risk)
+                    umargin = _open[i] * lot_size
                 else:
                     lot_size = int(myequity[i] / self.margin_required * self.risk)
+                    umargin = lot_size * self.margin_required
 
+                if lot_size < 0 or myequity[i] < 0:
+                    continue
+
+                imargin[i] = imargin[i-1] + umargin
                 imp_equity[i] = myequity[i]
                 loceq = myequity[i]
 
                 mytrades.append({'index': buy.index[i], 'direction': 'buy',
                                  'lotsize': lot_size, 'price': buyprice[i],
-                                 'value': 0, 'equity': myequity[i], 'ticks': 0})
+                                 'value': 0, 'equity': myequity[i], 'ticks': 0,
+                                 'umargin': umargin})
 
                 for cnt, col1, col2, col3 in zip(count(), sell.values[i+1:],
                                                  sellprice.values[i+1:], short.values[i+1:]):
@@ -473,6 +502,7 @@ class Amipy(object):
                     commission = self.commission * lot_size
                     trd_val = (trd_ticks * self.tick_value * lot_size) - commission
                     imp_equity[cnt+i+1] = loceq + trd_val
+                    imargin[cnt+i+1] = imargin[cnt+i]
 
                     if (col1 > 0) | (col3 > 0):
 
@@ -488,10 +518,12 @@ class Amipy(object):
                         value = myeq + np.sum(mvalue)
                         myequity[cnt+i+1:] = value
                         imp_equity[cnt+i+1:] = value
+                        imargin[cnt+i+1] = 0
 
                         mytrades.append({'index': sell.index[cnt+i+1], 'direction': 'sell',
                                          'lotsize': -lot_size, 'price': sellprice[cnt+i+1],
-                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks})
+                                         'value': trd_val, 'equity': value, 'ticks': trd_ticks,
+                                         'umargin': 0})
 
                         break
 
@@ -500,10 +532,12 @@ class Amipy(object):
         mytrades.index = pd.to_datetime(mytrades.index)
         mytrades['symbol'] = self.symbol
         mytrades = mytrades[:][['symbol', 'direction', 'lotsize', 'price',
-                                'value', 'equity', 'ticks']]
+                                'value', 'equity', 'ticks', 'umargin']]
         mytrades = mytrades.sort_index()
         self.trades = mytrades
         self.imp_equity = imp_equity
+        self.equity = myequity
+        self.margin = imargin
         #mytrades.to_csv('trades.csv')
 
     def analyze_results_silent(self, rfr):
