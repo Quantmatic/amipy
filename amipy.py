@@ -428,7 +428,7 @@ class Amipy(object):
                 if lot_size < 0 or myequity[i] < 0:
                     continue
 
-                imargin[i] = imargin[i-1] + umargin
+                imargin[i] = imargin[i] + umargin
                 imp_equity[i] = myequity[i]
                 loceq = myequity[i]
 
@@ -486,7 +486,7 @@ class Amipy(object):
                 if lot_size < 0 or myequity[i] < 0:
                     continue
 
-                imargin[i] = imargin[i-1] + umargin
+                imargin[i] = imargin[i] + umargin
                 imp_equity[i] = myequity[i]
                 loceq = myequity[i]
 
